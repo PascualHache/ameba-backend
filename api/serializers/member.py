@@ -4,9 +4,10 @@ import base64
 from rest_framework import serializers
 from django.core.files.base import ContentFile
 from django.conf import settings
+from django.utils import translation
 
 from api.models import Member, User, Cart, Membership, MemberProfileImage, \
-    MusicGenres, MemberMediaUrl
+    MusicGenres, MemberMediaUrl, ArtistTag
 from api.exceptions import (
     EmailAlreadyExists, WrongCartId, CartNeedOneSubscription,
     IdentityCardIsTooShort, WrongIdentityCardFormat
@@ -128,6 +129,17 @@ class MemberDetailSerializer(MemberSerializer):
     username = serializers.SlugRelatedField(
         slug_field='username', source='user', read_only=True, many=False
     )
+    # Explicit field: without this, DRF would default 'tags' to a
+    # PrimaryKeyRelatedField (since ArtistTag has a normal int pk), which
+    # only accepts integer ids. The frontend's "edit my project" form
+    # treats tags as plain name strings end to end (it never sees an
+    # ArtistTag id), so this needs to read/write by name instead. Missing
+    # names are created on the fly in to_internal_value below, since tags
+    # here are member-curated free-text labels, not a fixed catalogue.
+    tags = serializers.SlugRelatedField(
+        many=True, slug_field='name', queryset=ArtistTag.objects.all(),
+        required=False
+    )
 
     class Meta:
         model = Member
@@ -160,7 +172,22 @@ class MemberDetailSerializer(MemberSerializer):
         if 'username' in new_data:
             self.instance.user.username = new_data.pop('username')
             self.instance.user.save()
-        return super().to_internal_value(new_data)
+        if 'tags' not in new_data:
+            return super().to_internal_value(new_data)
+        # ArtistTag.name is managed by django-modeltranslation (separate
+        # name_ca/name_es db columns). The tag labels this form sends are
+        # not localized by the frontend - the same string is sent no
+        # matter the site language - so we pin all tag lookups/creation
+        # to the site's default language (settings.LANGUAGE_CODE).
+        # Without this, saving a tag while browsing in Catalan and again
+        # while browsing in Spanish could silently create two different
+        # ArtistTag rows for what the member intended as the same tag,
+        # and the SlugRelatedField lookup below could fail to find a tag
+        # created under a different active language.
+        with translation.override(settings.LANGUAGE_CODE):
+            for tag_name in new_data.get('tags', []):
+                ArtistTag.objects.get_or_create(name=tag_name)
+            return super().to_internal_value(new_data)
 
     def delete_all_images(self):
         for image in self.instance.images.all():

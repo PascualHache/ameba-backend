@@ -268,6 +268,44 @@ class TestMemberProfileDetails(BaseTest):
         self.assertEqual(member.genres.count(), 1)
         self.assertEqual(len(response.data), 1)
 
+    def test_member_can_edit_project_tags_with_names(self):
+        # Regression test: the frontend's "edit my project" form only ever
+        # deals with ArtistTag *names* (it reads them back as strings from
+        # GET and sends the same strings back on PATCH, mixing tags that
+        # already existed with brand new ones the member just picked).
+        # Previously 'tags' fell back to DRF's default
+        # PrimaryKeyRelatedField, which rejected any non-numeric string
+        # with a 400 error.
+        member = user_helpers.get_member()
+        token = user_helpers.get_user_token(member.user)
+        models.ArtistTag.objects.create(name='DJ')
+        url = self.DETAIL_ENDPOINT.format(pk='current')
+
+        response = self.request(
+            url,
+            'PATCH',
+            token,
+            {
+                'tags': ['DJ', 'Segell'],
+            }
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('tags', response.data)
+        self.assertEqual(sorted(response.data['tags']), ['DJ', 'Segell'])
+
+        # The pre-existing 'DJ' tag is reused rather than duplicated, and
+        # 'Segell' (a brand new tag name) is created on the fly.
+        self.assertEqual(
+            models.ArtistTag.objects.filter(name='DJ').count(), 1
+        )
+        self.assertTrue(
+            models.ArtistTag.objects.filter(name='Segell').exists()
+        )
+
+        get_response = self._get('current', token)
+        self.assertEqual(get_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(sorted(get_response.data['tags']), ['DJ', 'Segell'])
+
     def test_member_can_hidde_project(self):
         member = user_helpers.get_member(public=True)
         token = user_helpers.get_user_token(member.user)
